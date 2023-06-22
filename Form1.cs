@@ -2,10 +2,7 @@
 using OpenCvSharp.Aruco;
 using OpenCvSharp.Extensions;
 using System;
-using System.Data.OleDb;
 using System.IO;
-using System.Net;
-using System.Text;
 using System.Threading;
 using System.Windows.Forms;
 using Size = OpenCvSharp.Size;
@@ -16,30 +13,27 @@ namespace EngineeringProject
     {
         bool runVideo;
         VideoCapture capture;
-        HttpListener listener;
         Dictionary markers;
         Mat matInput;
-        Thread cameraThread, httpThread;
+        Thread cameraThread;
         readonly Size sizeObject = new Size(640, 480);
         string pathToFile;
         int[] ids;
         Form2 form;
-        bool showMarks, searchMarks, sendData;
+        bool showMarks, searchMarks;
         int idDict = 14;
-        readonly string providerDB = "Provider=Microsoft.Jet.OLEDB.4.0;Data Source=DatabaseStorage.mdb;";
-        OleDbConnection DataConnection;
+        int zCoord = 0;
+        string stringForLabel = "Координаты метки: ";
+        Point[] center;
+        readonly int markerLength = 300;
         public Form1()
         {
             InitializeComponent();
-            listener = new HttpListener();
-            listener.Prefixes.Add("http://127.0.0.1:7777/");
         }
         private void DisposeVideo()
         {
             pictureBox1.Image = null;
             if (cameraThread != null && cameraThread.IsAlive) cameraThread.Abort();
-            if (httpThread != null && httpThread.IsAlive) httpThread.Abort();
-            listener.Stop();
             matInput?.Dispose();
             capture?.Dispose();
         }
@@ -87,7 +81,6 @@ namespace EngineeringProject
             }
             else
             {
-                listener.Start();
                 runVideo = true;
                 panel3.Enabled = true;
                 matInput = new Mat();
@@ -103,20 +96,10 @@ namespace EngineeringProject
                 }
                 cameraThread = new Thread(new ThreadStart(CaptureCameraCallback));
                 cameraThread.Start();
-                httpThread = new Thread(new ThreadStart(SendDataToUser));
-                httpThread.Start();
                 button1.Text = "Стоп";
             }
         }
-        private void AddItemsToListBox(int[] items)
-        {
-            if (items == null) return;
-            listBox1.Items.Clear();
-            foreach (var item in items)
-            {
-                listBox1.Items.Add(item);
-            }
-        }
+
         private void CaptureCameraCallback()
         {
             while (runVideo)
@@ -124,24 +107,50 @@ namespace EngineeringProject
                 matInput = radioButton1.Checked ? capture.RetrieveMat() : new Mat(pathToFile).Resize(sizeObject);
                 if (searchMarks)
                 {
-                    SearchAndShowMarks(markers, ref matInput, out ids, showMarks);
+                    SearchAndShowMarks(markers, ref matInput, out ids, out center, showMarks);
                 }
                 Invoke(new Action(() =>
                 {
-                    AddItemsToListBox(ids);
+                    label4.Text = stringForLabel;
+                    label5.Text = center?.Length > 0 ? $"Расстояние до точки: X:{center[0].X - robotCoords[0]} Y:{center[0].Y - robotCoords[1]} Z:{zCoord - robotCoords[2]}" : label5.Text;
                     pictureBox1.Image = BitmapConverter.ToBitmap(matInput);
                     GC.Collect();
                     GC.WaitForPendingFinalizers();
                 }));
             }
         }
-        private void SearchAndShowMarks(Dictionary marksDict, ref Mat inputMat, out int[] ids, bool drawDetectedMarks)
+
+        private void SearchAndShowMarks(Dictionary marksDict, ref Mat inputMat, out int[] ids, out Point[] centers, bool drawDetectedMarks)
         {
-            Point2f[][] point2Fs;
+            Point2f[][] corners;
             var param = new DetectorParameters();
-            CvAruco.DetectMarkers(inputMat, marksDict, out point2Fs, out ids, param, out _);
-            if (drawDetectedMarks) CvAruco.DrawDetectedMarkers(inputMat, point2Fs, ids);
+            CvAruco.DetectMarkers(inputMat, marksDict, out corners, out ids, param, out _);
+            centers = new Point[corners.Length];
+            for (short i = 0; i < centers.Length; i++)
+            {
+                for (byte j = 0; j < 4; j++)
+                {
+                    centers[i].X += (int)corners[i][j].X;
+                    centers[i].Y += (int)corners[i][j].Y;
+                }
+                centers[i].X /= 4;
+                centers[i].Y /= 4;
+            }
+            if (drawDetectedMarks && corners.Length > 0)
+            {
+
+                zCoord = markerLength - (int)Point2f.Distance(corners[0][0], corners[0][1]);
+
+                CvAruco.DrawDetectedDiamonds(inputMat, corners);
+                for (short i = 0; i < centers.Length; i++)
+                {
+                    inputMat.Circle(centers[i], 2, Scalar.Red, 2);
+                    stringForLabel = $"Координаты метки: X:{centers[i].X - 5} Y:{centers[i].Y - 5} Z:{zCoord}";
+                    inputMat.PutText($"X:{centers[i].X - 5} Y:{centers[i].Y - 5} Z:{zCoord}", centers[i], HersheyFonts.HersheySimplex, 0.5, Scalar.Red);
+                }
+            }
         }
+
         private void button3_Click(object sender, EventArgs e)
         {
             form?.Dispose();
@@ -158,7 +167,7 @@ namespace EngineeringProject
         private void Form1_Load(object sender, EventArgs e)
         {
             markers = CvAruco.GetPredefinedDictionary(PredefinedDictionaryName.Dict7X7_250);
-            DataConnection = new OleDbConnection(providerDB);
+            button4_Click(null, null);
         }
 
         private void timer1_Tick(object sender, EventArgs e)
@@ -168,60 +177,21 @@ namespace EngineeringProject
             label3.Text = $"Используемый словарь {(PredefinedDictionaryName)idDict}";
             if (form.stopTimer) timer1.Stop();
         }
-
-        private void checkBox3_CheckedChanged(object sender, EventArgs e)
+        int[] robotCoords;
+        private void button4_Click(object sender, EventArgs e)
         {
-            sendData = checkBox3.Checked;
+            var items = textBox2.Text.Split(';');
+            robotCoords = new int[]{
+                int.Parse(items[0]),
+                int.Parse(items[1]),
+                int.Parse(items[2])};
+            label2.Text = $"Координаты робота : X:{items[0]} Y:{items[1]} Z:{items[2]}";
         }
+
 
         private void checkBox1_CheckedChanged(object sender, EventArgs e)
         {
             searchMarks = checkBox1.Checked;
-        }
-
-        private void SendDataToUser()
-        {
-            while (true)
-            {
-
-                HttpListenerContext context = listener.GetContext();
-                HttpListenerResponse response = context.Response;
-                byte[] buffer = { };
-                if (sendData && ids != null && ids.Length != 0)
-                {
-                    foreach (var id in ids)
-                    {
-                        buffer = Encoding.UTF8.GetBytes(GetDataFromDB(idDict, id));
-                    }
-                }
-                response.ContentLength64 = buffer.Length;
-                Stream output = response.OutputStream;
-                output.Write(buffer, 0, buffer.Length);
-                output.Close();
-
-            }
-        }
-        private string GetDataFromDB(int numberOfDic, int idMar)
-        {
-            string[] temp;
-            string result = "";
-            DataConnection.Open();
-            OleDbCommand oleDbCommand = DataConnection.CreateCommand();
-            oleDbCommand.CommandText = $"SELECT [Команда] FROM [Sets] WHERE [Тип матрицы] = '{numberOfDic}' AND [ID метки] = {idMar}";
-            OleDbDataReader oleDbDataReader = oleDbCommand.ExecuteReader();
-            oleDbDataReader.Read();
-            try
-            {
-                temp = oleDbDataReader.GetString(0).Split(';');
-
-                result = $"{{\"X\":{temp[0]},\"Y\":{temp[1]},\"Z\":{temp[2]},\"Gripper\":{temp[3]}}}";
-            }
-            catch (Exception ex)
-            {
-                result = "Data error";
-            }
-            DataConnection.Close();
-            return result;
         }
 
     }
